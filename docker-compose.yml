@@ -1,0 +1,16 @@
+# 可选：一键启动本地 PostgreSQL（环境已有 PostgreSQL 时无需使用）
+services:
+  db:
+    image: postgres:15
+    container_name: med-recycle-db
+    environment:
+      POSTGRES_DB: medrecycle
+      POSTGRES_USER: medrecycle
+      POSTGRES_PASSWORD: medrecycle
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

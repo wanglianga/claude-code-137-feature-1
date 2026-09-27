@@ -1,0 +1,30 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: med-recycle
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/medrecycle}
+    username: ${DB_USER:medrecycle}
+    password: ${DB_PASSWORD:medrecycle}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: Asia/Shanghai
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+app:
+  # 首次启动时写入演示数据（站点/暂存柜/积分规则/礼品/测试账号/活动日）
+  seed-demo-data: ${SEED_DEMO_DATA:true}
+
+logging:
+  level:
+    root: info

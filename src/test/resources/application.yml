@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    url: ${TEST_DB_URL:jdbc:postgresql://localhost:5432/medrecycle_test}
+    username: ${DB_USER:medrecycle}
+    password: ${DB_PASSWORD:medrecycle}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+
+app:
+  seed-demo-data: true
+
+logging:
+  level:
+    root: warn
