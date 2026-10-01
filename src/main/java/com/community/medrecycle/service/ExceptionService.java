@@ -26,6 +26,8 @@ public class ExceptionService {
     private final ReviewTaskRepository reviewTaskRepository;
     private final PointsService pointsService;
     private final PointsRuleService pointsRuleService;
+    private final BagPointsGate bagPointsGate;
+    private final PrivacyService privacyService;
     private final BatchRefresher batchRefresher;
 
     /** 现场/居民上报异常，按类型联动袋状态与积分 */
@@ -70,15 +72,16 @@ public class ExceptionService {
         switch (record.getType()) {
             case NON_EXPIRED_DRUG -> {
                 // 夹带未过期药：扣回已发积分并退回人工复核
-                if (bag.isPointsGranted()) {
-                    pointsService.revoke(batch.getResidentId(), bag.getPoints(), "BAG", bag.getBagNo(),
-                            "夹带未过期药扣回，异常单 " + record.getExceptionNo());
-                    bag.setPointsGranted(false);
-                }
+                bagPointsGate.revokeBagPoints(batch, bag,
+                        "夹带未过期药扣回，异常单 " + record.getExceptionNo());
                 sendBackToReview(batch, bag, "NON_EXPIRED_DRUG");
             }
-            case PRESCRIPTION_INFO_EXPOSED, UNSAFE_INJECTION, LIQUID_LEAK -> {
-                // 隐私泄露/针剂未安全封装/液体泄漏：须人工复核处置后才能继续流转
+            case PRESCRIPTION_INFO_EXPOSED -> {
+                // 处方/个人信息泄露：暂缓积分，转社区管理员隐私包装复核（撕除/遮盖后再发积分）
+                privacyService.flagExposed(batch, bag, "PRESCRIPTION_INFO_EXPOSED");
+            }
+            case UNSAFE_INJECTION, LIQUID_LEAK -> {
+                // 针剂未安全封装/液体泄漏：须人工复核处置后才能继续流转
                 if (bag.getStatus() != BagStatus.HANDED_OVER) {
                     sendBackToReview(batch, bag, record.getType().name());
                 }

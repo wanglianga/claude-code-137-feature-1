@@ -52,6 +52,18 @@ public class DrugBag {
     @Column(nullable = false)
     private boolean highRisk;
 
+    /** 药盒是否带姓名、身份证号、诊断等个人信息包装，需要隐私处理 */
+    @Column(nullable = false)
+    private boolean privacyPackaging = false;
+
+    /** 隐私处理未完成（居民拒绝、待复核或复核不合格）时积分暂缓发放 */
+    @Column(nullable = false)
+    private boolean pointsWithheld = false;
+
+    /** 隐私复核结论为按无积分回收：药品收下继续流转，但该袋积分永久不再发放 */
+    @Column(nullable = false)
+    private boolean pointsForfeited = false;
+
     /** 本袋应发积分 */
     @Column(nullable = false)
     private int points = 0;

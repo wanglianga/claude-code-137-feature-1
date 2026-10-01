@@ -28,8 +28,10 @@ public class BatchService {
     private final HandoverOrderRepository handoverOrderRepository;
     private final ExceptionRecordRepository exceptionRecordRepository;
     private final PointsTransactionRepository pointsTransactionRepository;
+    private final PrivacyPackagingRecordRepository privacyPackagingRecordRepository;
     private final PointsRuleService pointsRuleService;
-    private final PointsService pointsService;
+    private final BagPointsGate bagPointsGate;
+    private final PrivacyService privacyService;
     private final BatchRefresher batchRefresher;
 
     /** 回收员现场扫码登记：预约 -> 批次 */
@@ -66,7 +68,14 @@ public class BatchService {
     }
 
     public record WeighItem(DrugCategory category, double weightKg, String sealNo,
-                            String photoUrls, boolean dispute) {
+                            String photoUrls, boolean dispute,
+                            boolean privacyPackaging, boolean residentConsent,
+                            PrivacyMethod privacyMethod, String privacyGuidanceNote, String privacyPhotoUrls) {
+        /** 无隐私包装场景的便捷构造（兼容原有称重入参） */
+        public WeighItem(DrugCategory category, double weightKg, String sealNo,
+                         String photoUrls, boolean dispute) {
+            this(category, weightKg, sealNo, photoUrls, dispute, false, true, null, null, null);
+        }
     }
 
     /** 现场分类称重封袋：生成称重记录与封袋，高风险品类自动进入人工复核 */
@@ -126,7 +135,19 @@ public class BatchService {
             } else {
                 bag.setStatus(BagStatus.ACCEPTED);
                 bagRepository.save(bag);
-                grantBagPoints(batch, bag);
+            }
+
+            // 隐私包装：现场引导居民撕除/遮盖并拍照；居民拒绝则积分暂缓并转社区管理员复核
+            if (item.privacyPackaging()) {
+                privacyService.markOnSite(batch, bag, operatorId,
+                        new PrivacyService.OnSiteRequest(true, item.residentConsent(),
+                                item.privacyMethod(), item.privacyGuidanceNote(), item.privacyPhotoUrls()));
+                bag = bagRepository.findById(bag.getId()).orElseThrow();
+            }
+
+            // 高风险复核与隐私暂缓均解除时才发积分（网关内部幂等判定）
+            if (!highRisk) {
+                bagPointsGate.tryUnlock(batch, bag);
             }
 
             if (item.dispute()) {
@@ -161,15 +182,9 @@ public class BatchService {
         reviewTaskRepository.save(task);
     }
 
-    /** 发放单袋积分（幂等：已发放则跳过） */
+    /** 发放单袋积分（幂等，委托积分网关） */
     void grantBagPoints(RecycleBatch batch, DrugBag bag) {
-        if (bag.isPointsGranted() || bag.getPoints() <= 0) {
-            return;
-        }
-        pointsService.grant(batch.getResidentId(), bag.getPoints(), "BAG", bag.getBagNo(),
-                "回收发放 " + bag.getCategory() + " " + bag.getWeightKg() + "kg");
-        bag.setPointsGranted(true);
-        bagRepository.save(bag);
+        bagPointsGate.grantBagPoints(batch, bag);
     }
 
     void raiseAutoException(RecycleBatch batch, DrugBag bag, ExceptionType type, String description) {
@@ -218,6 +233,7 @@ public class BatchService {
             }
             view.put("handovers", handovers);
             view.put("pointsTransactions", pointsTransactionRepository.findByRefTypeAndRefId("BAG", bag.getBagNo()));
+            view.put("privacyRecord", privacyPackagingRecordRepository.findByBagId(bag.getId()).orElse(null));
             bagViews.add(view);
         }
 
@@ -226,6 +242,7 @@ public class BatchService {
         trace.put("batch", batch);
         trace.put("weighRecords", weighRecordRepository.findByBatchIdOrderByCreatedAtAsc(batch.getId()));
         trace.put("bags", bagViews);
+        trace.put("privacyRecords", privacyPackagingRecordRepository.findByBatchIdOrderByCreatedAtAsc(batch.getId()));
         trace.put("exceptions", exceptionRecordRepository.findByBatchId(batch.getId()));
         return trace;
     }

@@ -38,7 +38,11 @@ public class StorageService {
                     .orElseThrow(() -> BizException.notFound("封袋不存在: " + bagNo));
             if (bag.getStatus() != BagStatus.ACCEPTED) {
                 throw BizException.conflict("封袋 " + bagNo + " 状态不可入柜: " + bag.getStatus()
-                        + "（高风险袋需先复核通过）");
+                        + "（高风险袋需先复核通过、隐私包装须处理闭环）");
+            }
+            if (bag.isPointsWithheld()) {
+                throw BizException.conflict("封袋 " + bagNo + " 隐私包装处理未闭环（积分暂缓中），"
+                        + "社区管理员复核前不得入柜");
             }
             if (!bag.getSiteId().equals(cabinet.getSiteId())) {
                 throw BizException.badRequest("封袋 " + bagNo + " 不属于该站点暂存柜");

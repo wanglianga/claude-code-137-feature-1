@@ -3,6 +3,7 @@ package com.community.medrecycle.web;
 import com.community.medrecycle.config.AuthContext;
 import com.community.medrecycle.domain.Account;
 import com.community.medrecycle.domain.ReviewTask;
+import com.community.medrecycle.domain.enums.ReviewKind;
 import com.community.medrecycle.domain.enums.ReviewStatus;
 import com.community.medrecycle.domain.enums.Role;
 import com.community.medrecycle.service.ReviewService;
@@ -20,10 +21,18 @@ public class ReviewController {
 
     private final ReviewService reviewService;
 
+    /**
+     * 复核列表。kind=RISK（默认）复核员/管理员可查；kind=PRIVACY 仅社区管理员可查。
+     */
     @GetMapping
-    public List<ReviewTask> list(@RequestParam(required = false) ReviewStatus status) {
-        AuthContext.requireRole(Role.REVIEWER, Role.ADMIN);
-        return reviewService.list(status);
+    public List<ReviewTask> list(@RequestParam(required = false) ReviewStatus status,
+                                 @RequestParam(required = false) ReviewKind kind) {
+        if (kind == ReviewKind.PRIVACY) {
+            AuthContext.requireRole(Role.ADMIN);
+        } else {
+            AuthContext.requireRole(Role.REVIEWER, Role.ADMIN);
+        }
+        return reviewService.list(kind, status);
     }
 
     public record DecideRequest(boolean approve, String note) {

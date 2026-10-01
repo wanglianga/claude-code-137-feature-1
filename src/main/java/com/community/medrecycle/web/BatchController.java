@@ -4,6 +4,7 @@ import com.community.medrecycle.config.AuthContext;
 import com.community.medrecycle.domain.Account;
 import com.community.medrecycle.domain.RecycleBatch;
 import com.community.medrecycle.domain.enums.DrugCategory;
+import com.community.medrecycle.domain.enums.PrivacyMethod;
 import com.community.medrecycle.domain.enums.Role;
 import com.community.medrecycle.service.BatchService;
 import jakarta.validation.Valid;
@@ -36,18 +37,23 @@ public class BatchController {
     }
 
     public record WeighItemRequest(@NotNull DrugCategory category, @Positive double weightKg,
-                                   String sealNo, String photoUrls, boolean dispute) {
+                                   String sealNo, String photoUrls, boolean dispute,
+                                   boolean privacyPackaging, boolean residentConsent,
+                                   PrivacyMethod privacyMethod, String privacyGuidanceNote,
+                                   String privacyPhotoUrls) {
     }
 
     public record WeighRequest(@NotEmpty @Valid List<WeighItemRequest> items) {
     }
 
-    /** 现场分类称重封袋 */
+    /** 现场分类称重封袋；药盒带个人信息时同步标记隐私包装（撕除/遮盖、处理后照片） */
     @PostMapping("/{batchNo}/weigh")
     public RecycleBatch weigh(@PathVariable String batchNo, @Validated @RequestBody WeighRequest request) {
         Account recycler = AuthContext.requireRole(Role.RECYCLER, Role.ADMIN);
         List<BatchService.WeighItem> items = request.items().stream()
-                .map(i -> new BatchService.WeighItem(i.category(), i.weightKg(), i.sealNo(), i.photoUrls(), i.dispute()))
+                .map(i -> new BatchService.WeighItem(i.category(), i.weightKg(), i.sealNo(), i.photoUrls(),
+                        i.dispute(), i.privacyPackaging(), i.residentConsent(),
+                        i.privacyMethod(), i.privacyGuidanceNote(), i.privacyPhotoUrls()))
                 .toList();
         return batchService.weigh(recycler.getId(), batchNo, items);
     }

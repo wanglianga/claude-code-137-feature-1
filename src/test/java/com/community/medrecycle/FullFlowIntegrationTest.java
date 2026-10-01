@@ -72,7 +72,7 @@ class FullFlowIntegrationTest {
         assertEquals(balanceBefore + 20, pointsService.balanceOf(resident.getId()));
 
         // 4. 人工复核精神类药品，通过后发放 0.5 * 20 = 10 分
-        List<ReviewTask> pending = reviewService.list(ReviewStatus.PENDING);
+        List<ReviewTask> pending = reviewService.list(ReviewKind.RISK, ReviewStatus.PENDING);
         assertEquals(1, pending.size());
         reviewService.decide(reviewer.getId(), pending.get(0).getTaskNo(), true, "核对无误");
         assertEquals(balanceBefore + 30, pointsService.balanceOf(resident.getId()));

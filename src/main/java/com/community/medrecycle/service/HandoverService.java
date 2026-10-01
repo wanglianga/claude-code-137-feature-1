@@ -25,6 +25,7 @@ public class HandoverService {
     private final CommunitySiteRepository siteRepository;
     private final StorageCabinetRepository cabinetRepository;
     private final StorageEntryRepository entryRepository;
+    private final PrivacyPackagingRecordRepository privacyRepository;
     private final ExceptionService exceptionService;
     private final BatchRefresher batchRefresher;
 
@@ -44,10 +45,12 @@ public class HandoverService {
                 if (bag.getStatus() != BagStatus.STORED || !bag.getSiteId().equals(siteId)) {
                     throw BizException.conflict("封袋 " + bagNo + " 不在该站点暂存中，状态: " + bag.getStatus());
                 }
+                ensurePrivacyCleared(bag);
                 bags.add(bag);
             }
         } else {
             bags = bagRepository.findBySiteIdAndStatus(siteId, BagStatus.STORED);
+            bags.forEach(this::ensurePrivacyCleared);
         }
         if (bags.isEmpty()) {
             throw BizException.conflict("站点暂存柜中没有可交接的药品袋");
@@ -180,6 +183,14 @@ public class HandoverService {
         return saved;
     }
 
+    /** 隐私处理未闭环（居民拒绝/待复核/复核不合格待重新处理）的袋不得进入环保交接，防止个人信息随药品外流 */
+    private void ensurePrivacyCleared(DrugBag bag) {
+        if (bag.isPointsWithheld()) {
+            throw BizException.conflict("封袋 " + bag.getBagNo() + " 隐私包装处理未闭环（积分暂缓中），"
+                    + "须社区管理员复核通过或按无积分回收后才能交接");
+        }
+    }
+
     /** 袋出柜：关闭暂存记录并释放柜容量 */
     private void releaseStorage(DrugBag bag) {
         entryRepository.findByBagIdAndOutAtIsNull(bag.getId()).ifPresent(entry -> {
@@ -217,6 +228,22 @@ public class HandoverService {
         detail.put("order", order);
         detail.put("items", items);
         detail.put("pointsResult", new ArrayList<>(batchPoints.values()));
+        // 隐私处理记录随交接批次留痕：逐袋标注是否已撕除/遮盖、居民是否同意、复核结论
+        List<Map<String, Object>> privacyList = new ArrayList<>();
+        for (HandoverItem item : items) {
+            privacyRepository.findByBagId(item.getBagId()).ifPresent(rec -> {
+                Map<String, Object> p = new LinkedHashMap<>();
+                p.put("bagNo", item.getBagNo());
+                p.put("recordNo", rec.getRecordNo());
+                p.put("residentConsent", rec.isResidentConsent());
+                p.put("method", rec.getMethod());
+                p.put("processedPhotoUrls", rec.getProcessedPhotoUrls());
+                p.put("status", rec.getStatus());
+                p.put("reviewNote", rec.getReviewNote());
+                privacyList.add(p);
+            });
+        }
+        detail.put("privacyRecords", privacyList);
         return detail;
     }
 

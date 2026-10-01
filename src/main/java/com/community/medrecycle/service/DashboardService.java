@@ -4,6 +4,7 @@ import com.community.medrecycle.config.BizException;
 import com.community.medrecycle.domain.*;
 import com.community.medrecycle.domain.enums.BagStatus;
 import com.community.medrecycle.domain.enums.ExceptionStatus;
+import com.community.medrecycle.domain.enums.ReviewKind;
 import com.community.medrecycle.domain.enums.ReviewStatus;
 import com.community.medrecycle.repository.*;
 import lombok.RequiredArgsConstructor;
@@ -65,7 +66,10 @@ public class DashboardService {
                 "requiresDualIfHandoverNow", anyHighRisk || readyWeight >= site.getDualWeightThresholdKg(),
                 "dualWeightThresholdKg", site.getDualWeightThresholdKg(),
                 "containsHighRisk", anyHighRisk));
-        result.put("pendingReviews", reviewTaskRepository.findByStatusOrderByCreatedAtAsc(ReviewStatus.PENDING).size());
+        result.put("pendingReviews", reviewTaskRepository
+                .countByKindAndStatus(ReviewKind.RISK, ReviewStatus.PENDING));
+        result.put("pendingPrivacyReviews", reviewTaskRepository
+                .countByKindAndStatus(ReviewKind.PRIVACY, ReviewStatus.PENDING));
         result.put("openExceptions", exceptionRepository.countByStatus(ExceptionStatus.OPEN)
                 + exceptionRepository.countByStatus(ExceptionStatus.PROCESSING));
         return result;
