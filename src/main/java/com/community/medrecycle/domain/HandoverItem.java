@@ -40,4 +40,12 @@ public class HandoverItem {
 
     @Column(length = 256)
     private String rejectReason;
+
+    /** 交接时该袋隐私包装处理状态快照（防止个人信息随药品外流，交接批次留痕） */
+    @Column(length = 16)
+    private String privacyStatus;
+
+    /** 隐私处理记录号，便于从交接批次反查处置与复核留痕 */
+    @Column(length = 32)
+    private String privacyTreatmentNo;
 }

@@ -13,4 +13,5 @@ public interface ReviewTaskRepository extends JpaRepository<ReviewTask, Long> {
     List<ReviewTask> findByBatchId(Long batchId);
     List<ReviewTask> findByBagId(Long bagId);
     List<ReviewTask> findByBagIdAndStatus(Long bagId, ReviewStatus status);
+    List<ReviewTask> findByReviewKindAndStatusOrderByCreatedAtAsc(String reviewKind, ReviewStatus status);
 }

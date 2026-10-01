@@ -36,18 +36,22 @@ public class BatchController {
     }
 
     public record WeighItemRequest(@NotNull DrugCategory category, @Positive double weightKg,
-                                   String sealNo, String photoUrls, boolean dispute) {
+                                   String sealNo, String photoUrls, boolean dispute,
+                                   boolean personalInfoPackaging, Boolean residentConsent,
+                                   String privacyAction, String treatedPhotoUrls, String privacyNote) {
     }
 
     public record WeighRequest(@NotEmpty @Valid List<WeighItemRequest> items) {
     }
 
-    /** 现场分类称重封袋 */
+    /** 现场分类称重封袋（可标记隐私包装：居民同意撕除/遮盖并上传处理后照片） */
     @PostMapping("/{batchNo}/weigh")
     public RecycleBatch weigh(@PathVariable String batchNo, @Validated @RequestBody WeighRequest request) {
         Account recycler = AuthContext.requireRole(Role.RECYCLER, Role.ADMIN);
         List<BatchService.WeighItem> items = request.items().stream()
-                .map(i -> new BatchService.WeighItem(i.category(), i.weightKg(), i.sealNo(), i.photoUrls(), i.dispute()))
+                .map(i -> new BatchService.WeighItem(i.category(), i.weightKg(), i.sealNo(), i.photoUrls(),
+                        i.dispute(), i.personalInfoPackaging(), i.residentConsent(),
+                        i.privacyAction(), i.treatedPhotoUrls(), i.privacyNote()))
                 .toList();
         return batchService.weigh(recycler.getId(), batchNo, items);
     }

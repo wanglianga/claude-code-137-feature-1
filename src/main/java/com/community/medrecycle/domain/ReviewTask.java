@@ -31,9 +31,13 @@ public class ReviewTask {
     @Column(nullable = false, length = 32)
     private String bagNo;
 
-    /** 触发原因：HIGH_RISK_CATEGORY / 异常类型 */
+    /** 触发原因：HIGH_RISK_CATEGORY / PRIVACY_PENDING / 异常类型 */
     @Column(nullable = false, length = 64)
     private String reason;
+
+    /** 复核种类：HIGH_RISK 高风险品类（复核员）/ PRIVACY 隐私包装（社区管理员） */
+    @Column(nullable = false, length = 16)
+    private String reviewKind = "HIGH_RISK";
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)

@@ -2,6 +2,7 @@ package com.community.medrecycle.domain;
 
 import com.community.medrecycle.domain.enums.BagStatus;
 import com.community.medrecycle.domain.enums.DrugCategory;
+import com.community.medrecycle.domain.enums.PrivacyStatus;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -58,6 +59,18 @@ public class DrugBag {
 
     @Column(nullable = false)
     private boolean pointsGranted = false;
+
+    /** 隐私包装未处理合格：积分暂缓发放（复核通过后补发，或按无积分回收清零） */
+    @Column(nullable = false)
+    private boolean pointsWithheld = false;
+
+    /** 隐私包装处理状态，默认无个人信息无需处理 */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    private PrivacyStatus privacyStatus = PrivacyStatus.NOT_REQUIRED;
+
+    /** 关联的隐私包装处理记录 */
+    private Long privacyTreatmentId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 24)

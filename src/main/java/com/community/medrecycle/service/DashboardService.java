@@ -4,6 +4,8 @@ import com.community.medrecycle.config.BizException;
 import com.community.medrecycle.domain.*;
 import com.community.medrecycle.domain.enums.BagStatus;
 import com.community.medrecycle.domain.enums.ExceptionStatus;
+import com.community.medrecycle.domain.enums.PrivacyStatus;
+import com.community.medrecycle.domain.enums.ReviewKind;
 import com.community.medrecycle.domain.enums.ReviewStatus;
 import com.community.medrecycle.repository.*;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,7 @@ public class DashboardService {
     private final DrugBagRepository bagRepository;
     private final ReviewTaskRepository reviewTaskRepository;
     private final ExceptionRecordRepository exceptionRepository;
+    private final PrivacyTreatmentRepository privacyTreatmentRepository;
     private final StorageService storageService;
 
     @Transactional(readOnly = true)
@@ -66,6 +69,11 @@ public class DashboardService {
                 "dualWeightThresholdKg", site.getDualWeightThresholdKg(),
                 "containsHighRisk", anyHighRisk));
         result.put("pendingReviews", reviewTaskRepository.findByStatusOrderByCreatedAtAsc(ReviewStatus.PENDING).size());
+        result.put("pendingHighRiskReviews", reviewTaskRepository
+                .findByReviewKindAndStatusOrderByCreatedAtAsc(ReviewKind.HIGH_RISK.name(), ReviewStatus.PENDING).size());
+        result.put("pendingPrivacyReviews", reviewTaskRepository
+                .findByReviewKindAndStatusOrderByCreatedAtAsc(ReviewKind.PRIVACY.name(), ReviewStatus.PENDING).size());
+        result.put("privacyReContact", privacyTreatmentRepository.countByStatus(PrivacyStatus.RE_CONTACT));
         result.put("openExceptions", exceptionRepository.countByStatus(ExceptionStatus.OPEN)
                 + exceptionRepository.countByStatus(ExceptionStatus.PROCESSING));
         return result;

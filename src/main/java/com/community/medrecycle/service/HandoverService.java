@@ -6,6 +6,7 @@ import com.community.medrecycle.domain.*;
 import com.community.medrecycle.domain.enums.BagStatus;
 import com.community.medrecycle.domain.enums.ExceptionType;
 import com.community.medrecycle.domain.enums.HandoverStatus;
+import com.community.medrecycle.domain.enums.PrivacyStatus;
 import com.community.medrecycle.repository.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,7 @@ public class HandoverService {
     private final StorageEntryRepository entryRepository;
     private final ExceptionService exceptionService;
     private final BatchRefresher batchRefresher;
+    private final PrivacyTreatmentRepository privacyTreatmentRepository;
 
     /** 建交接单：默认取站点全部暂存袋；未达环保公司上门量时拒绝（可 force 强制） */
     @Transactional
@@ -74,6 +76,7 @@ public class HandoverService {
         HandoverOrder saved = orderRepository.save(order);
 
         Set<Long> batchIds = new HashSet<>();
+        boolean anyInfoLeakRisk = false;
         for (DrugBag bag : bags) {
             HandoverItem item = new HandoverItem();
             item.setOrderId(saved.getId());
@@ -81,11 +84,25 @@ public class HandoverService {
             item.setBagNo(bag.getBagNo());
             item.setCategory(bag.getCategory());
             item.setWeightKg(bag.getWeightKg());
+            // 隐私处理记录随环保交接批次留痕：仅处理合格/无积分回收的药品可出库
+            item.setPrivacyStatus(bag.getPrivacyStatus() == null
+                    ? null : bag.getPrivacyStatus().name());
+            if (bag.getPrivacyTreatmentId() != null) {
+                privacyTreatmentRepository.findById(bag.getPrivacyTreatmentId())
+                        .ifPresent(t -> item.setPrivacyTreatmentNo(t.getTreatmentNo()));
+            }
+            if (bag.getPrivacyStatus() == PrivacyStatus.PENDING_REVIEW
+                    || bag.getPrivacyStatus() == PrivacyStatus.RE_CONTACT) {
+                anyInfoLeakRisk = true;
+            }
             itemRepository.save(item);
 
             bag.setStatus(BagStatus.HANDOVER_ASSIGNED);
             bagRepository.save(bag);
             batchIds.add(bag.getBatchId());
+        }
+        if (anyInfoLeakRisk) {
+            throw BizException.conflict("存在隐私包装未处理合格的药品袋，禁止进入环保交接，防止个人信息外流");
         }
         batchIds.forEach(batchRefresher::refresh);
         return saved;
@@ -217,6 +234,29 @@ public class HandoverService {
         detail.put("order", order);
         detail.put("items", items);
         detail.put("pointsResult", new ArrayList<>(batchPoints.values()));
+
+        // 隐私包装交接留痕：本批次各袋隐私处理状态，确认无个人信息随药品外流
+        List<Map<String, Object>> privacyResult = new ArrayList<>();
+        long privacyBagCount = 0;
+        for (HandoverItem item : items) {
+            if (item.getPrivacyTreatmentNo() == null && item.getPrivacyStatus() == null) {
+                continue;
+            }
+            privacyBagCount++;
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("bagNo", item.getBagNo());
+            p.put("privacyStatus", item.getPrivacyStatus());
+            p.put("privacyTreatmentNo", item.getPrivacyTreatmentNo());
+            privacyResult.add(p);
+        }
+        Map<String, Object> privacySummary = new LinkedHashMap<>();
+        privacySummary.put("privacyBagCount", privacyBagCount);
+        privacySummary.put("allCleared", privacyResult.stream()
+                .allMatch(p -> "TREATED".equals(p.get("privacyStatus"))
+                        || "NO_POINTS".equals(p.get("privacyStatus"))
+                        || "NOT_REQUIRED".equals(p.get("privacyStatus"))));
+        privacySummary.put("items", privacyResult);
+        detail.put("privacyResult", privacySummary);
         return detail;
     }
 

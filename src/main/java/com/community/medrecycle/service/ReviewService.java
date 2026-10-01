@@ -42,6 +42,9 @@ public class ReviewService {
         if (task.getStatus() != ReviewStatus.PENDING) {
             throw BizException.conflict("复核任务已处理: " + task.getStatus());
         }
+        if ("PRIVACY".equals(task.getReviewKind())) {
+            throw BizException.badRequest("隐私包装复核请由社区管理员通过 /api/privacy/reviews 接口处理");
+        }
         DrugBag bag = bagRepository.findById(task.getBagId()).orElseThrow();
         RecycleBatch batch = batchRepository.findById(task.getBatchId()).orElseThrow();
 
@@ -52,12 +55,21 @@ public class ReviewService {
         reviewTaskRepository.save(task);
 
         if (approve) {
-            bag.setStatus(BagStatus.ACCEPTED);
-            bagRepository.save(bag);
-            batchService.grantBagPoints(batch, bag);
+            // 若仍有其它待决闸门（如隐私包装复核），保持待复核、积分继续暂缓，全部解除后再统一发放
+            batchService.settleAfterReview(batch, bag);
         } else {
             bag.setStatus(BagStatus.REVIEW_REJECTED);
             bagRepository.save(bag);
+            // 袋被终止：同袋其余待决复核任务（如隐私包装）一并终结，避免悬挂
+            reviewTaskRepository.findByBagIdAndStatus(bag.getId(), ReviewStatus.PENDING).stream()
+                    .filter(t -> !t.getId().equals(task.getId()))
+                    .forEach(t -> {
+                        t.setStatus(ReviewStatus.REJECTED);
+                        t.setReviewerId(reviewerId);
+                        t.setDecisionNote("关联高风险复核被拒绝，袋终止流转");
+                        t.setDecidedAt(LocalDateTime.now());
+                        reviewTaskRepository.save(t);
+                    });
             if (bag.isPointsGranted()) {
                 // 已发积分被复核否决 -> 扣回
                 pointsService.revoke(batch.getResidentId(), bag.getPoints(), "BAG", bag.getBagNo(),

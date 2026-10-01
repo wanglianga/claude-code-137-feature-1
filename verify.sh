@@ -26,16 +26,19 @@ check "服务健康" "$HEALTH" "UP"
 
 echo "== 1. 四类角色登录 =="
 T_RESIDENT=$(login resident1 resident123)
+T_RESIDENT2=$(login resident2 resident123)
 T_RECYCLER=$(login recycler1 recycler123)
 T_RECYCLER2=$(login recycler2 recycler123)
 T_REVIEWER=$(login reviewer1 reviewer123)
 T_ADMIN=$(login admin1 admin123)
 check "居民登录" "$([ -n "$T_RESIDENT" ] && [ "$T_RESIDENT" != null ] && echo ok)" "ok"
+check "居民2 登录" "$([ -n "$T_RESIDENT2" ] && [ "$T_RESIDENT2" != null ] && echo ok)" "ok"
 check "回收员登录" "$([ -n "$T_RECYCLER" ] && [ "$T_RECYCLER" != null ] && echo ok)" "ok"
 check "复核员登录" "$([ -n "$T_REVIEWER" ] && [ "$T_REVIEWER" != null ] && echo ok)" "ok"
 check "管理员登录" "$([ -n "$T_ADMIN" ] && [ "$T_ADMIN" != null ] && echo ok)" "ok"
 
 AUTH_R=(-H "X-Auth-Token: $T_RESIDENT")
+AUTH_R2=(-H "X-Auth-Token: $T_RESIDENT2")
 AUTH_W=(-H "X-Auth-Token: $T_RECYCLER")
 AUTH_V=(-H "X-Auth-Token: $T_REVIEWER")
 AUTH_A=(-H "X-Auth-Token: $T_ADMIN")
@@ -183,6 +186,77 @@ GIFT_EXPENSIVE=$(curl -s "${AUTH_R[@]}" "$BASE/api/catalog/gifts" | jq -r '[.[] 
 CODE=$(curl -s -o /tmp/ex_fail.json -w '%{http_code}' -X POST "${AUTH_R[@]}" "${JSON[@]}" "$BASE/api/points/exchange" -d "{\"giftId\": $GIFT_EXPENSIVE}")
 check "余额不足兑换失败(409)" "$CODE" "409"
 check "失败单已记录" "$(jq -r '.status' /tmp/ex_fail.json)" "FAILED"
+
+echo "== 15. 隐私包装处理（现场处理即时积分 / 拒绝则暂缓 / 管理员复核 / 重新联系 / 无积分回收 / 交接留痕） =="
+# 用 resident2（初始 0 积分）独立验证，不影响 resident1 的余额断言
+check "居民2 初始 0 积分" "$(curl -s "${AUTH_R2[@]}" "$BASE/api/points/balance" | jq '.balance')" "0"
+
+# 15A 现场引导撕除/遮盖并上传处理后照片 -> 处理合格、即时发放（TABLET 2kg*10=20）
+PA=$(curl -s -X POST "${AUTH_R2[@]}" "${JSON[@]}" "$BASE/api/appointments" -d "{
+  \"siteId\": $SITE_ID, \"drugTypeDesc\": \"带姓名药盒的降压药\", \"estimatedQty\": 2,
+  \"hasPrescription\": true, \"hasLiquid\": false, \"hasInjection\": false, \"hasPersonalInfo\": true}" | jq -r '.appointmentNo')
+PBA=$(curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/batches/check-in" -d "{\"appointmentNo\": \"$PA\"}" | jq -r '.batchNo')
+curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/batches/$PBA/weigh" -d '{
+  "items": [{"category": "TABLET", "weightKg": 2.0, "photoUrls": "photo://seal-a",
+             "personalInfoPackaging": true, "residentConsent": true, "privacyAction": "TEAR_OFF",
+             "treatedPhotoUrls": "photo://priv-ok", "privacyNote": "药盒含姓名/身份证号/诊断，已撕除标签"}]}' > /dev/null
+BAGA=$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBA/trace" | jq -r '.bags[0].bag.bagNo')
+check "现场处理合格-袋已验收" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBA/trace" | jq -r '.bags[0].bag.status')" "ACCEPTED"
+check "现场处理合格-隐私状态 TREATED" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBA/trace" | jq -r '.bags[0].bag.privacyStatus')" "TREATED"
+check "现场处理合格-即时积分 20" "$(curl -s "${AUTH_R2[@]}" "$BASE/api/points/balance" | jq '.balance')" "20"
+check "追溯含隐私处理记录" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBA/trace" | jq -r '.bags[0].privacyTreatment.status')" "TREATED"
+
+# 15B 居民拒绝处理 -> 药品封袋但积分暂缓，进隐私复核；暂缓袋不可入柜
+PB=$(curl -s -X POST "${AUTH_R2[@]}" "${JSON[@]}" "$BASE/api/appointments" -d "{
+  \"siteId\": $SITE_ID, \"drugTypeDesc\": \"贴有身份证号的外用药\", \"estimatedQty\": 1,
+  \"hasPrescription\": true, \"hasLiquid\": false, \"hasInjection\": false, \"hasPersonalInfo\": true}" | jq -r '.appointmentNo')
+PBB=$(curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/batches/check-in" -d "{\"appointmentNo\": \"$PB\"}" | jq -r '.batchNo')
+curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/batches/$PBB/weigh" -d '{
+  "items": [{"category": "EXTERNAL", "weightKg": 1.0, "photoUrls": "photo://seal-b",
+             "personalInfoPackaging": true, "residentConsent": false, "privacyNote": "居民拒绝撕除标签"}]}' > /dev/null
+BAGB=$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBB/trace" | jq -r '.bags[0].bag.bagNo')
+check "拒绝处理-袋待复核" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBB/trace" | jq -r '.bags[0].bag.status')" "PENDING_REVIEW"
+check "拒绝处理-积分暂缓仍 20" "$(curl -s "${AUTH_R2[@]}" "$BASE/api/points/balance" | jq '.balance')" "20"
+check "拒绝处理-暂缓袋不可入柜(409)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/storage/put" -d "{\"cabinetId\": $CABINET_ID, \"bagNos\": [\"$BAGB\"]}")" "409"
+PTB=$(curl -s "${AUTH_A[@]}" "$BASE/api/privacy/reviews?status=PENDING" | jq -r --arg b "$BAGB" '[.[] | select(.bag.bagNo==$b)][0].reviewTask.taskNo')
+check "隐私复核任务生成" "$(echo "$PTB" | grep -c '^RT')" "1"
+check "看板-待隐私复核数 >=1" "$(curl -s "${AUTH_A[@]}" "$BASE/api/admin/dashboard?siteId=$SITE_ID" | jq '.pendingPrivacyReviews >= 1')" "true"
+# 通用高风险复核接口不能处理隐私任务
+check "高风险接口处理隐私任务被拒(400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH_V[@]}" "${JSON[@]}" "$BASE/api/reviews/$PTB/decide" -d '{"approve": true, "note": "x"}')" "400"
+# 社区管理员复核合格 -> 补发 1kg*6=6
+curl -s -X POST "${AUTH_A[@]}" "${JSON[@]}" "$BASE/api/privacy/reviews/$PTB/decide" -d '{"outcome": "APPROVE", "note": "电话核实已自行遮盖，照片合格"}' > /dev/null
+check "复核通过-积分补发 26" "$(curl -s "${AUTH_R2[@]}" "$BASE/api/points/balance" | jq '.balance')" "26"
+check "复核通过-袋已验收" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBB/trace" | jq -r '.bags[0].bag.status')" "ACCEPTED"
+
+# 15C 拒绝 -> 管理员判处理不合格需重新联系居民 -> 随访仍拒绝 -> 按无积分回收（药品保留、积分不发）
+PC=$(curl -s -X POST "${AUTH_R2[@]}" "${JSON[@]}" "$BASE/api/appointments" -d "{
+  \"siteId\": $SITE_ID, \"drugTypeDesc\": \"带诊断标签的抗生素\", \"estimatedQty\": 1,
+  \"hasPrescription\": true, \"hasLiquid\": false, \"hasInjection\": false, \"hasPersonalInfo\": true}" | jq -r '.appointmentNo')
+PBC=$(curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/batches/check-in" -d "{\"appointmentNo\": \"$PC\"}" | jq -r '.batchNo')
+curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/batches/$PBC/weigh" -d '{
+  "items": [{"category": "ANTIBIOTIC", "weightKg": 1.0, "photoUrls": "photo://seal-c",
+             "personalInfoPackaging": true, "residentConsent": false}]}' > /dev/null
+BAGC=$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBC/trace" | jq -r '.bags[0].bag.bagNo')
+PTC=$(curl -s "${AUTH_A[@]}" "$BASE/api/privacy/reviews?status=PENDING" | jq -r --arg b "$BAGC" '[.[] | select(.bag.bagNo==$b)][0].reviewTask.taskNo')
+TREATC=$(curl -s -X POST "${AUTH_A[@]}" "${JSON[@]}" "$BASE/api/privacy/reviews/$PTC/decide" -d '{"outcome": "RE_CONTACT", "note": "需网格员再次上门沟通"}' | jq -r '.treatmentNo')
+check "重新联系居民-袋仍暂缓" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBC/trace" | jq -r '.bags[0].bag.privacyStatus')" "RE_CONTACT"
+check "重新联系居民-积分仍 26" "$(curl -s "${AUTH_R2[@]}" "$BASE/api/points/balance" | jq '.balance')" "26"
+check "重新联系清单含该记录" "$(curl -s "${AUTH_A[@]}" "$BASE/api/privacy/re-contact" | jq --arg t "$TREATC" '[.[] | select(.treatmentNo==$t)] | length')" "1"
+check "随访已处理但缺照片被拒(400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH_A[@]}" "${JSON[@]}" "$BASE/api/privacy/treatments/$TREATC/followup" -d '{"residentTreated": true, "note": "x"}')" "400"
+curl -s -X POST "${AUTH_A[@]}" "${JSON[@]}" "$BASE/api/privacy/treatments/$TREATC/followup" -d '{"residentTreated": false, "note": "居民仍拒绝，按无积分回收"}' > /dev/null
+check "无积分回收-隐私状态 NO_POINTS" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBC/trace" | jq -r '.bags[0].bag.privacyStatus')" "NO_POINTS"
+check "无积分回收-药品保留已验收" "$(curl -s "${AUTH_W[@]}" "$BASE/api/batches/$PBC/trace" | jq -r '.bags[0].bag.status')" "ACCEPTED"
+check "无积分回收-积分不发仍 26" "$(curl -s "${AUTH_R2[@]}" "$BASE/api/points/balance" | jq '.balance')" "26"
+
+# 15D 隐私处理记录随环保交接批次留痕（A 袋 TREATED）
+curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/storage/put" -d "{\"cabinetId\": $CABINET_ID, \"bagNos\": [\"$BAGA\"]}" > /dev/null
+PORDER=$(curl -s -X POST "${AUTH_A[@]}" "${JSON[@]}" "$BASE/api/handovers" -d "{\"siteId\": $SITE_ID, \"companyName\": \"绿源环保科技\", \"destination\": \"市危废处理中心\", \"bagNos\": [\"$BAGA\"], \"force\": true}" | jq -r '.orderNo')
+curl -s -X POST "${AUTH_W[@]}" "$BASE/api/handovers/$PORDER/sign" > /dev/null
+curl -s -X POST "${AUTH_W[@]}" "${JSON[@]}" "$BASE/api/handovers/$PORDER/complete" -d '{"receiverName": "绿源-李司机"}' > /dev/null
+PDETAIL=$(curl -s "${AUTH_A[@]}" "$BASE/api/handovers/$PORDER")
+check "交接单-隐私袋留痕数 1" "$(echo "$PDETAIL" | jq '.privacyResult.privacyBagCount')" "1"
+check "交接单-隐私全部已清除可出库" "$(echo "$PDETAIL" | jq -r '.privacyResult.allCleared')" "true"
+check "交接单-隐私状态快照 TREATED" "$(echo "$PDETAIL" | jq -r '.privacyResult.items[0].privacyStatus')" "TREATED"
 
 echo ""
 echo "==================================="

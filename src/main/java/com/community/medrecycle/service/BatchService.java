@@ -28,6 +28,7 @@ public class BatchService {
     private final HandoverOrderRepository handoverOrderRepository;
     private final ExceptionRecordRepository exceptionRecordRepository;
     private final PointsTransactionRepository pointsTransactionRepository;
+    private final PrivacyTreatmentRepository privacyTreatmentRepository;
     private final PointsRuleService pointsRuleService;
     private final PointsService pointsService;
     private final BatchRefresher batchRefresher;
@@ -66,7 +67,15 @@ public class BatchService {
     }
 
     public record WeighItem(DrugCategory category, double weightKg, String sealNo,
-                            String photoUrls, boolean dispute) {
+                            String photoUrls, boolean dispute,
+                            boolean personalInfoPackaging, Boolean residentConsent,
+                            String privacyAction, String treatedPhotoUrls, String privacyNote) {
+
+        /** 无隐私包装场景的简构造器 */
+        public WeighItem(DrugCategory category, double weightKg, String sealNo,
+                         String photoUrls, boolean dispute) {
+            this(category, weightKg, sealNo, photoUrls, dispute, false, null, null, null, null);
+        }
     }
 
     /** 现场分类称重封袋：生成称重记录与封袋，高风险品类自动进入人工复核 */
@@ -117,17 +126,39 @@ public class BatchService {
             bag.setHighRisk(highRisk);
             bag.setPoints(pointsRuleService.pointsFor(
                     appointment.getPointsRuleSnapshot(), item.category(), item.weightKg(), batch.getPointsMultiplier()));
+            bagRepository.save(bag);
 
-            if (highRisk) {
-                // 高风险药品：先人工复核，复核通过才发积分
-                bag.setStatus(BagStatus.PENDING_REVIEW);
-                bagRepository.save(bag);
-                createReviewTask(batch, bag, "HIGH_RISK_CATEGORY");
-            } else {
-                bag.setStatus(BagStatus.ACCEPTED);
-                bagRepository.save(bag);
-                grantBagPoints(batch, bag);
+            // 隐私包装：回收员现场标记，引导居民撕除/遮盖并拍摄处理后照片
+            PrivacyTreatment privacy = null;
+            boolean needPrivacyReview = false;
+            if (item.personalInfoPackaging()) {
+                boolean consent = Boolean.TRUE.equals(item.residentConsent());
+                boolean hasTreatedPhoto = item.treatedPhotoUrls() != null && !item.treatedPhotoUrls().isBlank();
+                boolean treated = consent && hasTreatedPhoto;
+
+                privacy = new PrivacyTreatment();
+                privacy.setTreatmentNo(NoGen.next("PR"));
+                privacy.setBatchId(batch.getId());
+                privacy.setBatchNo(batch.getBatchNo());
+                privacy.setBagId(bag.getId());
+                privacy.setBagNo(bag.getBagNo());
+                privacy.setSiteId(batch.getSiteId());
+                privacy.setPersonalInfoPresent(true);
+                privacy.setGuidedBy(operatorId);
+                privacy.setResidentConsent(item.residentConsent());
+                privacy.setAction(consent
+                        ? ((item.privacyAction() == null || item.privacyAction().isBlank())
+                                ? "TEAR_OFF" : item.privacyAction())
+                        : "REFUSED");
+                privacy.setTreatedPhotoUrls(item.treatedPhotoUrls());
+                privacy.setNote(item.privacyNote());
+                privacy.setPendingPoints(bag.getPoints());
+                privacy.setStatus(treated ? PrivacyStatus.TREATED : PrivacyStatus.PENDING_REVIEW);
+                privacy = privacyTreatmentRepository.save(privacy);
+                needPrivacyReview = !treated;
             }
+
+            applyIntakeGates(batch, bag, highRisk, privacy, needPrivacyReview);
 
             if (item.dispute()) {
                 raiseAutoException(batch, bag, ExceptionType.WEIGHT_DISPUTE,
@@ -152,24 +183,96 @@ public class BatchService {
     }
 
     void createReviewTask(RecycleBatch batch, DrugBag bag, String reason) {
+        createReviewTask(batch, bag, reason, ReviewKind.HIGH_RISK.name());
+    }
+
+    void createReviewTask(RecycleBatch batch, DrugBag bag, String reason, String reviewKind) {
         ReviewTask task = new ReviewTask();
         task.setTaskNo(NoGen.next("RT"));
         task.setBatchId(batch.getId());
         task.setBagId(bag.getId());
         task.setBagNo(bag.getBagNo());
         task.setReason(reason);
+        task.setReviewKind(reviewKind);
         reviewTaskRepository.save(task);
+    }
+
+    /**
+     * 称重入库闸门：高风险品类需复核员复核；隐私包装未现场处理合格需社区管理员复核。
+     * 任一闸门未过：袋进入待复核、积分暂缓；全部通过：验收并即时发放积分。
+     */
+    private void applyIntakeGates(RecycleBatch batch, DrugBag bag, boolean highRisk,
+                                  PrivacyTreatment privacy, boolean needPrivacyReview) {
+        boolean privacyGate = needPrivacyReview;
+        if (privacy != null) {
+            bag.setPrivacyTreatmentId(privacy.getId());
+            bag.setPrivacyStatus(privacy.getStatus());
+        }
+        boolean withholdPoints = highRisk || privacyGate;
+
+        if (privacyGate) {
+            // 居民不同意处理/处理存疑：药品可封袋，但积分暂缓，社区管理员复核后决定
+            bag.setPointsWithheld(true);
+            bag.setPrivacyStatus(PrivacyStatus.PENDING_REVIEW);
+        }
+
+        if (withholdPoints) {
+            bag.setStatus(BagStatus.PENDING_REVIEW);
+            bagRepository.save(bag);
+            if (highRisk) {
+                createReviewTask(batch, bag, "HIGH_RISK_CATEGORY");
+            }
+            if (privacyGate) {
+                createReviewTask(batch, bag, "PRIVACY_PENDING", ReviewKind.PRIVACY.name());
+            }
+        } else {
+            if (privacy != null) {
+                bag.setPointsWithheld(false);
+            }
+            bag.setStatus(BagStatus.ACCEPTED);
+            bagRepository.save(bag);
+            grantBagPoints(batch, bag);
+        }
     }
 
     /** 发放单袋积分（幂等：已发放则跳过） */
     void grantBagPoints(RecycleBatch batch, DrugBag bag) {
-        if (bag.isPointsGranted() || bag.getPoints() <= 0) {
+        if (bag.isPointsGranted() || bag.isPointsWithheld() || bag.getPoints() <= 0) {
             return;
         }
         pointsService.grant(batch.getResidentId(), bag.getPoints(), "BAG", bag.getBagNo(),
                 "回收发放 " + bag.getCategory() + " " + bag.getWeightKg() + "kg");
         bag.setPointsGranted(true);
         bagRepository.save(bag);
+    }
+
+    /**
+     * 任一复核闸门（高风险/隐私包装）出结果后重新评估袋状态：
+     * 仍有未决复核任务 -> 保持待复核；全部解除 -> 验收，隐私按无积分回收者不发积分，其余补发。
+     */
+    void settleAfterReview(RecycleBatch batch, DrugBag bag) {
+        boolean stillPending = !reviewTaskRepository.findByBagIdAndStatus(bag.getId(), ReviewStatus.PENDING).isEmpty();
+        // 隐私处理仍待复核或待重新联系居民，同样是未解除闸门：药品暂留、积分不发
+        boolean privacyHold = bag.getPrivacyStatus() == PrivacyStatus.PENDING_REVIEW
+                || bag.getPrivacyStatus() == PrivacyStatus.RE_CONTACT;
+        if (stillPending || privacyHold) {
+            bag.setStatus(BagStatus.PENDING_REVIEW);
+            bagRepository.save(bag);
+            batchRefresher.refresh(batch.getId());
+            return;
+        }
+
+        bag.setStatus(BagStatus.ACCEPTED);
+        // 隐私按无积分回收：药品保留流转，但积分不予发放
+        if (bag.getPrivacyStatus() == PrivacyStatus.NO_POINTS) {
+            bag.setPointsWithheld(false);
+            bagRepository.save(bag);
+        } else {
+            bag.setPointsWithheld(false);
+            bagRepository.save(bag);
+            grantBagPoints(batch, bag);
+        }
+        batchRefresher.refresh(batch.getId());
     }
 
     void raiseAutoException(RecycleBatch batch, DrugBag bag, ExceptionType type, String description) {
@@ -218,6 +321,7 @@ public class BatchService {
             }
             view.put("handovers", handovers);
             view.put("pointsTransactions", pointsTransactionRepository.findByRefTypeAndRefId("BAG", bag.getBagNo()));
+            view.put("privacyTreatment", privacyTreatmentRepository.findByBagId(bag.getId()).orElse(null));
             bagViews.add(view);
         }
 
@@ -226,6 +330,7 @@ public class BatchService {
         trace.put("batch", batch);
         trace.put("weighRecords", weighRecordRepository.findByBatchIdOrderByCreatedAtAsc(batch.getId()));
         trace.put("bags", bagViews);
+        trace.put("privacyTreatments", privacyTreatmentRepository.findByBatchId(batch.getId()));
         trace.put("exceptions", exceptionRecordRepository.findByBatchId(batch.getId()));
         return trace;
     }
